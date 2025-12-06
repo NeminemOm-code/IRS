@@ -31,9 +31,15 @@ def extract_cpg_positions(chrom, seq):
 
 print("Extracting CpG positions...")
 cpg_data = []
-for chrom in [f'chr{i}' for i in range(1,23)] + ['chrX','chrY']:
-    seq = str(genome[chrom])
-    cpg_data.extend([(chrom, p) for p in extract_cpg_positions(chrom, seq)])
+# Adjust chromosome names to match FASTA file (e.g., '1' instead of 'chr1')
+# and store 'chr' prefixed names for consistency with cpgIslandExt.txt
+fasta_chrom_names = [str(i) for i in range(1,23)] + ['X','Y']
+ucsc_chrom_names = [f'chr{i}' for i in range(1,23)] + ['chrX','chrY']
+
+for i, fasta_chrom in enumerate(fasta_chrom_names):
+    ucsc_chrom = ucsc_chrom_names[i] # Get corresponding UCSC name
+    seq = str(genome[fasta_chrom])
+    cpg_data.extend([(ucsc_chrom, p) for p in extract_cpg_positions(ucsc_chrom, seq)])
 cpg_df = pd.DataFrame(cpg_data, columns=['chrom','pos'])
 
 # Restrict to CpG islands ±5kb
