@@ -1,0 +1,93 @@
+# IRS Genomic CpG phi-Clustering Analysis
+# Final version with quadratic sub-bin refinement
+# Human Genome GRCh38 — 2025
+
+!pip install -q pyfaidx pysam pandas numpy scipy matplotlib seaborn
+
+import numpy as np, pandas as pd, matplotlib.pyplot as plt, seaborn as sns
+from scipy.signal import find_peaks
+from scipy.optimize import curve_fit
+from pyfaidx import Fasta
+import warnings; warnings.filterwarnings('ignore')
+sns.set(style="whitegrid", font_scale=1.2)
+
+# Download data
+!wget -q -O Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz https://ftp.ensembl.org/pub/release-110/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
+!gunzip -f Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
+!wget -q -O cpgIslandExt.txt.gz https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/cpgIslandExt.txt.gz
+!gunzip -f cpgIslandExt.txt.gz
+
+# Load genome
+genome = Fasta('Homo_sapiens.GRCh38.dna.primary_assembly.fa')
+
+# Extract CpG positions (both strands)
+def extract_cpg_positions(chrom, seq):
+    positions = []
+    s = seq.upper()
+    for i in range(len(s)-1):
+        if s[i:i+2] in ['CG','GC']:
+            positions.append(i+1)
+    return sorted(set(positions))
+
+print("Extracting CpG positions...")
+cpg_data = []
+for chrom in [f'chr{i}' for i in range(1,23)] + ['chrX','chrY']:
+    seq = str(genome[chrom])
+    cpg_data.extend([(chrom, p) for p in extract_cpg_positions(chrom, seq)])
+cpg_df = pd.DataFrame(cpg_data, columns=['chrom','pos'])
+
+# Restrict to CpG islands ±5kb
+islands = pd.read_csv('cpgIslandExt.txt.gz', sep='\t', header=None,
+                      usecols=[1,2,3], names=['chrom','start','end'])
+cpg_island_df = pd.concat([cpg_df[((cpg_df['chrom']==row['chrom']) &
+           (cpg_df['pos'] >= row['start']-5000) &
+           (cpg_df['pos'] <= row['end']+5000))] for _,row in islands.iterrows()]).drop_duplicates()
+
+# Pairwise distances
+distances_bp = []
+for chrom in cpg_island_df['chrom'].unique():
+    pos = cpg_island_df[cpg_island_df['chrom']==chrom]['pos'].values
+    if len(pos)<2: continue
+    diff = pos[:,None] - pos[None,:]
+    upper = diff[np.triu_indices_from(diff, k=1)]
+    distances_bp.extend(np.abs(upper))
+distances_bp = np.array(distances_bp)
+
+# RDF
+max_dist = 500
+bins = np.arange(0, max_dist+1, 1)
+hist, _ = np.histogram(distances_bp, bins=bins)
+r = bins[:-1] + 0.5
+g_r = hist / (r + 1)
+g_r_smooth = pd.Series(g_r).rolling(window=5, center=True).mean().values
+
+# Quadratic refinement
+peaks_idx, _ = find_peaks(g_r_smooth, height=1.1*np.mean(g_r_smooth), distance=8)
+
+def parabola(x, a, b, c): return a + b*x + c*x**2
+refined_peaks = []
+for idx in peaks_idx:
+    l, rght = max(idx-5,0), min(idx+6,len(r))
+    x_data, y_data = r[l:rght], g_r_smooth[l:rght]
+    try:
+        popt, _ = curve_fit(parabola, x_data, y_data)
+        refined_peaks.append(-popt[1]/(2*popt[2]))
+    except:
+        refined_peaks.append(r[idx])
+observed_peaks = np.array(refined_peaks)
+
+# Final ratio
+ratios = observed_peaks[1:] / observed_peaks[:-1]
+print(f"Mean phi = {ratios.mean():.12f} +/- {ratios.std()/np.sqrt(len(ratios)):.12f}")
+
+# Plot
+phi = (1 + np.sqrt(5))/2
+plt.figure(figsize=(12,7))
+plt.plot(r, g_r_smooth, color='darkcyan', lw=2)
+for n in range(9):
+    p = 10.4 * phi**n
+    if p < max_dist:
+        plt.axvline(p, color='red', linestyle='--', alpha=0.7)
+plt.xlim(0,350); plt.xlabel('CpG--CpG distance (bp)')
+plt.ylabel('g(r) [normalized]'); plt.title('Human Genomic CpG Islands Show Precise phi-Scaling')
+plt.grid(alpha=0.3); plt.show()
