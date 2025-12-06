@@ -1,0 +1,62 @@
+import numpy as np
+from Bio.PDB import PDBParser, PDBList
+from scipy.spatial.distance import pdist
+from scipy.signal import find_peaks
+from scipy.optimize import curve_fit
+from scipy.stats import chisquare
+import warnings
+warnings.filterwarnings("ignore")
+
+def quadratic(x, a, b, c): 
+    return a*x**2 + b*x + c
+
+def analyse_pdb(pdb_id, bin_size=0.2):
+    pdbl = PDBList()
+    pdb_file = pdbl.retrieve_pdb_file(pdb_id, pdir='.', file_format='pdb', overwrite=True)
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure(pdb_id, pdb_file)
+
+    coords = np.array([a.get_coord() for a in structure.get_atoms() if a.element != 'H'])
+    print(f"{pdb_id}: {len(coords):,} heavy atoms")
+
+    dists = pdist(coords)
+    dists = dists[dists > 0]
+
+    max_r = np.percentile(dists, 99.0)
+    bins = np.arange(0.5, max_r + bin_size, bin_size)
+    hist, edges = np.histogram(dists, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2
+
+    r = centers
+    expected = 4/3 * np.pi * ((r + bin_size/2)**3 - (r - bin_size/2)**3)
+    expected = expected / expected.sum() * hist.sum()
+    g_r = hist / np.clip(expected, 1e-12, None)
+
+    peaks, _ = find_peaks(g_r, height=1.1*np.mean(g_r), distance=int(2/bin_size))
+    refined = []
+    for p in peaks:
+        if p < 2 or p >= len(g_r)-2: continue
+        x = centers[p-2:p+3]
+        y = g_r[p-2:p+3]
+        try:
+            popt, _ = curve_fit(quadratic, x, y, p0=[-1,1,1])
+            refined.append(-popt[1]/(2*popt[0]))
+        except:
+            refined.append(centers[p])
+    refined = np.array(refined)
+
+    phi = (1 + np.sqrt(5))/2
+    ratios = refined[1:]/refined[:-1]
+    if len(ratios) > 1:
+        weights = 1.0 / (np.var(ratios) + 1e-12)
+        mean_phi = np.average(ratios, weights=weights)
+    else:
+        mean_phi = np.nan
+
+    chi2, pval = chisquare(hist, expected)
+    print(f"→ {len(refined)} shells, ⟨ϕ⟩ = {mean_phi:.8f}, χ² p ≈ {pval:.2e}\n")
+    return refined, mean_phi
+
+# Analyse all structures
+for pid in ["3IYV","1CWP","1OHG","5MPB","4PT2","4V1W","7KHP","6B8F","1FHA"]:
+    analyse_pdb(pid)
